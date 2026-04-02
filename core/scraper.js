@@ -1,103 +1,212 @@
 const puppeteer = require("puppeteer");
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Inicia el browser y navega a WhatsApp Web.
+ * Reutiliza la sesión guardada en ./session si existe.
+ */
 async function iniciar() {
   const browser = await puppeteer.launch({
     headless: false,
     userDataDir: "./session",
     args: [
       "--no-sandbox",
-      "--disable-setuid-sandbox"
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage"
     ]
   });
 
   const page = await browser.newPage();
 
-  await page.goto("https://web.whatsapp.com", {
-    waitUntil: "networkidle2"
+  // Bloquear recursos innecesarios
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    if (["image", "font", "media"].includes(req.resourceType())) {
+      req.abort();
+    } else {
+      req.continue();
+    }
   });
 
-  console.log("Esperando login o sesión existente...");
+  await page.goto("https://web.whatsapp.com", {
+    waitUntil: "networkidle2",
+    timeout: 60000
+  });
 
-  // ✅ Espera más robusta (varios posibles selectores)
-  await page.waitForFunction(() => {
-    return document.querySelector("div[title='Buscar o empezar un chat']") ||
-           document.querySelector("div[contenteditable='true']");
-  }, { timeout: 0 });
+  console.log("Esperando sesión de WhatsApp (escaneá el QR si es necesario)...");
 
-  console.log("WhatsApp listo");
+  // El diagnóstico confirmó que estos son los selectores reales presentes:
+  // - #pane-side  →  panel lateral de chats
+  // - div[aria-label='Lista de chats']  →  contenedor de la lista
+  // Esperamos cualquiera de los dos para confirmar que WA cargó
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#pane-side") ||
+      document.querySelector("div[aria-label='Lista de chats']"),
+    { timeout: 0 }
+  );
+
+  await sleep(1500);
+  console.log("WhatsApp Web listo.");
 
   return { browser, page };
 }
 
-// 🔍 abrir chat por nombre (versión robusta)
+/**
+ * Abre un chat buscando por nombre.
+ *
+ * El diagnóstico reveló que el buscador es:
+ *   <INPUT data-tab="3" role="textbox">
+ * No un div, sino un input nativo.
+ */
 async function abrirChat(page, nombre) {
-  console.log("Buscando chat...");
+  console.log(`Buscando chat: "${nombre}"...`);
 
-  // Esperar buscador
-  const searchBox = await page.waitForSelector(
-    "div[title='Buscar o empezar un chat']",
-    { timeout: 0 }
-  );
+  // Selector exacto confirmado por debug: INPUT con data-tab="3"
+  const buscador = await page.waitForSelector("input[data-tab='3']", {
+    timeout: 15000
+  });
 
-  // Limpiar input (importante)
-  await searchBox.click({ clickCount: 3 });
-  await page.keyboard.press("Backspace");
+  // Limpiar y escribir
+  await buscador.click({ clickCount: 3 });
+  await sleep(200);
+  await buscador.press("Backspace");
+  await sleep(200);
 
-  // Escribir nombre
-  await page.keyboard.type(nombre, { delay: 100 });
+  await buscador.type(nombre, { delay: 80 });
+  console.log(`Buscando "${nombre}"...`);
 
-  // Esperar resultados
-  await page.waitForTimeout(2000);
+  // Esperar que aparezcan resultados
+  await sleep(2500);
 
-  // Seleccionar primer chat
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
+  // Hacer click en el primer resultado que contenga el nombre buscado
+  const clickResultado = await page.evaluate((nombreBuscado) => {
+    // Con la nueva UI de WA los resultados están en #pane-side como list items
+    const items = Array.from(document.querySelectorAll(
+      "#pane-side div[role='listitem'], " +
+      "div[aria-label='Lista de chats'] div[role='listitem']"
+    ));
 
-  // Esperar que el chat cargue
-  await page.waitForSelector("div[role='textbox']", { timeout: 0 });
+    // Buscar el que contenga el nombre en su texto
+    const match = items.find(
+      (el) => el.innerText && el.innerText.toLowerCase().includes(nombreBuscado.toLowerCase())
+    );
 
-  console.log("Chat abierto");
-}
-
-// 📥 obtener mensajes (mejorado)
-async function obtenerMensajes(page) {
-  return await page.evaluate(async () => {
-
-    function sleep(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
+    if (match) {
+      match.click();
+      return true;
     }
 
-    // 🔥 Forzar scroll hacia arriba para cargar mensajes
-    const chat = document.querySelector("div[role='application']");
+    // Fallback: clickear el primer listitem disponible
+    if (items.length > 0) {
+      items[0].click();
+      return "primer-resultado";
+    }
 
-    if (chat) {
-      for (let i = 0; i < 5; i++) {
-        chat.scrollTop = 0;
-        await sleep(500);
+    return false;
+  }, nombre);
+
+  if (clickResultado === false) {
+    // Último fallback: teclado
+    console.warn("[Scraper] No encontré resultado clickeable, usando teclado...");
+    await page.keyboard.press("ArrowDown");
+    await sleep(300);
+    await page.keyboard.press("Enter");
+  } else if (clickResultado === "primer-resultado") {
+    console.warn("[Scraper] No encontré el nombre exacto, abrí el primer resultado disponible.");
+  }
+
+  await sleep(2000);
+
+  // Confirmar que el chat se abrió: debe aparecer el área de mensajes
+  try {
+    await page.waitForSelector("#main", { timeout: 10000 });
+    console.log("Chat abierto correctamente.");
+  } catch (_) {
+    console.warn("[Scraper] No confirmé apertura del chat, continuando igual...");
+  }
+}
+
+/**
+ * Fuerza scroll hacia arriba para cargar mensajes históricos.
+ * WA virtualiza el DOM — sin scroll solo hay ~20 mensajes visibles.
+ */
+async function forzarCargaMensajes(page, pasadas = 6) {
+  await page.evaluate(async (n) => {
+    // Buscar el contenedor scrolleable dentro de #main
+    const selectores = [
+      "#main div[tabindex='-1']",
+      "#main div[role='application']",
+      "#main div[class*='copyable-area']",
+      "#main"
+    ];
+
+    let chat = null;
+    for (const sel of selectores) {
+      const el = document.querySelector(sel);
+      if (el && el.scrollHeight > el.clientHeight) {
+        chat = el;
+        break;
       }
     }
 
-    await sleep(2000); // esperar render
+    if (!chat) return;
 
-    const mensajes = [];
+    for (let i = 0; i < n; i++) {
+      chat.scrollTop = 0;
+      await new Promise((r) => setTimeout(r, 600));
+    }
 
-    const nodes = document.querySelectorAll(
-      "div.message-in span.selectable-text, div.message-out span.selectable-text"
-    );
+    // Volver al final
+    chat.scrollTop = chat.scrollHeight;
+    await new Promise((r) => setTimeout(r, 800));
+  }, pasadas);
+}
 
-    nodes.forEach(n => {
-      const texto = n.innerText;
-      if (texto && texto.trim() !== "") {
-        mensajes.push(texto.trim());
+/**
+ * Extrae todos los mensajes de texto visibles en el chat abierto.
+ *
+ * Como el diagnóstico mostró que message-in/message-out no matchearon
+ * (porque no había chat abierto), usamos selectores más amplios
+ * dentro de #main como fallback robusto.
+ */
+async function obtenerMensajes(page) {
+  await forzarCargaMensajes(page, 6);
+  await sleep(800);
+
+  const mensajes = await page.evaluate(() => {
+    const resultado = [];
+
+    // Intentar selectores de más específico a más general
+    const SELECTORES = [
+      // Selectores clásicos de WA
+      "div.message-in span.selectable-text",
+      "div.message-out span.selectable-text",
+      // Selectores por clase parcial (más resistentes a updates)
+      "#main span.selectable-text",
+      // Selector muy amplio de último recurso
+      "#main span[class*='selectable']"
+    ];
+
+    let nodos = [];
+    for (const sel of SELECTORES) {
+      nodos = Array.from(document.querySelectorAll(sel));
+      if (nodos.length > 0) break;
+    }
+
+    nodos.forEach((n) => {
+      const texto = n.innerText?.trim();
+      if (texto && texto.length > 0) {
+        resultado.push(texto);
       }
     });
 
-    return mensajes;
+    // Deduplicar consecutivos idénticos
+    return resultado.filter((msg, i, arr) => i === 0 || msg !== arr[i - 1]);
   });
+
+  return mensajes;
 }
 
-module.exports = {
-  iniciar,
-  abrirChat,
-  obtenerMensajes
-};
+module.exports = { iniciar, abrirChat, obtenerMensajes };

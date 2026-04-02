@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-notebook-sync",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "fs": "^0.0.1-security",
+    "googleapis": "^171.4.0",
+    "puppeteer": "^24.40.0"
+  }
+}

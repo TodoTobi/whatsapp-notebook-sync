@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WA Sync — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0a0a0a;
+    --bg2:       #111111;
+    --bg3:       #1a1a1a;
+    --border:    #2a2a2a;
+    --border2:   #3a3a3a;
+    --green:     #00ff88;
+    --green-dim: #00cc66;
+    --green-bg:  rgba(0,255,136,0.06);
+    --amber:     #ffaa00;
+    --amber-dim: #cc8800;
+    --red:       #ff4444;
+    --text:      #e8e8e8;
+    --text2:     #888888;
+    --text3:     #555555;
+    --mono:      'IBM Plex Mono', monospace;
+    --sans:      'IBM Plex Sans', sans-serif;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.15) 2px,
+      rgba(0,0,0,0.15) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 280px 1fr;
+    height: 100vh;
+    gap: 0;
+  }
+
+  /* ── Header ── */
+  header {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--green);
+  }
+
+  .logo span {
+    color: var(--text3);
+    font-weight: 300;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--border2);
+    border-radius: 2px;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text2);
+    transition: all 0.3s;
+  }
+
+  .status-pill.active {
+    border-color: var(--green-dim);
+    color: var(--green);
+    background: var(--green-bg);
+  }
+
+  .status-pill.stopped {
+    border-color: #444;
+    color: var(--red);
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text3);
+  }
+
+  .dot.active {
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  .dot.stopped { background: var(--red); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text3);
+    font-family: var(--mono);
+  }
+
+  #clock { color: var(--text2); letter-spacing: 0.05em; }
+
+  /* ── Sidebar ── */
+  aside {
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow-y: auto;
+    background: var(--bg);
+  }
+
+  .section-label {
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--text3);
+    padding: 0 20px 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+
+  .stat-block {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: background 0.2s;
+  }
+
+  .stat-block:hover { background: var(--bg2); }
+
+  .stat-label {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+
+  .stat-value {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--green);
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+
+  .stat-value.amber { color: var(--amber); }
+  .stat-value.dim { color: var(--text); font-size: 14px; font-weight: 400; }
+
+  .stat-sub {
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 2px;
+  }
+
+  /* Barra de progreso minimalista */
+  .mini-bar {
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+
+  .mini-bar-fill {
+    height: 100%;
+    background: var(--green);
+    border-radius: 1px;
+    transition: width 0.8s ease;
+  }
+
+  /* ── Control buttons ── */
+  .controls {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: auto;
+    border-top: 1px solid var(--border);
+  }
+
+  .btn {
+    padding: 8px 14px;
+    border: 1px solid var(--border2);
+    background: transparent;
+    color: var(--text2);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn::before { content: '▶'; font-size: 8px; }
+  .btn:hover { border-color: var(--green-dim); color: var(--green); background: var(--green-bg); }
+  .btn.danger { border-color: #3a1a1a; color: #884444; }
+  .btn.danger::before { content: '■'; }
+  .btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(255,68,68,0.06); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ── Main content ── */
+  main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .main-header {
+    padding: 16px 24px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .main-title {
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+
+  .log-controls {
+    display: flex;
+    gap: 8px;
+  }
+
+  .tag {
+    font-size: 9px;
+    padding: 2px 7px;
+    border: 1px solid var(--border2);
+    border-radius: 2px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text3);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .tag:hover, .tag.active { border-color: var(--green-dim); color: var(--green); }
+
+  /* ── Log feed ── */
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+
+  #log::-webkit-scrollbar { width: 4px; }
+  #log::-webkit-scrollbar-track { background: transparent; }
+  #log::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .log-entry {
+    display: grid;
+    grid-template-columns: 110px 60px 1fr;
+    gap: 0;
+    padding: 5px 24px;
+    border-bottom: 1px solid transparent;
+    transition: background 0.15s;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateX(-4px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .log-entry:hover { background: var(--bg2); border-bottom-color: var(--border); }
+
+  .log-time { color: var(--text3); font-size: 11px; padding-top: 1px; }
+
+  .log-badge {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 1px 0;
+  }
+
+  .log-badge.sync  { color: var(--green); }
+  .log-badge.info  { color: var(--text2); }
+  .log-badge.warn  { color: var(--amber); }
+  .log-badge.error { color: var(--red); }
+
+  .log-msg { color: var(--text); font-size: 12px; word-break: break-word; }
+  .log-msg .highlight { color: var(--green); font-weight: 500; }
+
+  /* ── Footer ── */
+  footer {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg);
+  }
+
+  .footer-left { font-size: 10px; color: var(--text3); letter-spacing: 0.05em; }
+  .footer-right { font-size: 10px; color: var(--text3); }
+  .footer-right span { color: var(--green); }
+
+  /* ── Next sync countdown ── */
+  .next-sync {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--text3);
+  }
+
+  .countdown {
+    font-size: 13px;
+    color: var(--amber);
+    font-weight: 500;
+    min-width: 28px;
+    text-align: right;
+  }
+
+  /* ── Empty state ── */
+  .empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--text3);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+
+  .empty-icon { font-size: 32px; opacity: 0.2; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <div class="logo">WA<span>·</span>SYNC <span>// dashboard</span></div>
+      <div class="status-pill" id="statusPill">
+        <div class="dot" id="statusDot"></div>
+        <span id="statusText">Conectando...</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="section-label">Métricas</div>
+
+    <div class="stat-block">
+      <div class="stat-label">Mensajes sincronizados</div>
+      <div class="stat-value" id="totalSynced">0</div>
+      <div class="stat-sub">en esta sesión</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">Último sync</div>
+      <div class="stat-value dim" id="lastSync">—</div>
+      <div class="stat-sub" id="lastSyncAgo"></div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">Ciclos completados</div>
+      <div class="stat-value amber" id="cycles">0</div>
+      <div class="stat-sub">polling cada 60s</div>
+      <div class="mini-bar">
+        <div class="mini-bar-fill" id="cycleBar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">Errores</div>
+      <div class="stat-value" id="errors" style="color:var(--text2)">0</div>
+      <div class="stat-sub">en esta sesión</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">Chat objetivo</div>
+      <div class="stat-value dim" id="chatName">—</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn" onclick="forceSync()">Sync ahora</button>
+      <button class="btn danger" onclick="stopSync()">Detener proceso</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main>
+    <div class="main-header">
+      <div class="main-title">Log de actividad</div>
+      <div class="log-controls">
+        <div class="tag active" onclick="filterLog('all', this)">Todos</div>
+        <div class="tag" onclick="filterLog('sync', this)">Sync</div>
+        <div class="tag" onclick="filterLog('warn', this)">Avisos</div>
+        <div class="tag" onclick="filterLog('error', this)">Errores</div>
+      </div>
+    </div>
+
+    <div id="log"></div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-left">wa-sync · node.js · puppeteer · google docs api</div>
+    <div class="next-sync">
+      próximo sync en <span class="countdown" id="nextSync">—</span>s
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  // ── Estado ────────────────────────────────────────────────────────────────
+  let state = {
+    running: false,
+    totalSynced: 0,
+    cycles: 0,
+    errors: 0,
+    lastSync: null,
+    chatName: '—',
+    filter: 'all',
+    nextSyncIn: 60,
+    logs: []
+  };
+
+  let countdownInterval = null;
+
+  // ── Reloj ─────────────────────────────────────────────────────────────────
+  function updateClock() {
+    document.getElementById('clock').textContent =
+      new Date().toLocaleTimeString('es-AR', { hour12: false });
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ── Polling al servidor ───────────────────────────────────────────────────
+  async function fetchStatus() {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      applyState(data);
+    } catch (_) {
+      setStatus(false);
+    }
+  }
+
+  async function fetchLogs() {
+    try {
+      const res = await fetch('/api/logs');
+      const data = await res.json();
+      if (data.logs) renderLogs(data.logs);
+    } catch (_) {}
+  }
+
+  function applyState(data) {
+    state.running     = data.running ?? false;
+    state.totalSynced = data.totalSynced ?? 0;
+    state.cycles      = data.cycles ?? 0;
+    state.errors      = data.errors ?? 0;
+    state.lastSync    = data.lastSync ?? null;
+    state.chatName    = data.chatName ?? '—';
+    state.nextSyncIn  = data.nextSyncIn ?? 60;
+    renderStats();
+    setStatus(state.running);
+  }
+
+  function setStatus(running) {
+    const pill = document.getElementById('statusPill');
+    const dot  = document.getElementById('statusDot');
+    const txt  = document.getElementById('statusText');
+
+    pill.className = 'status-pill ' + (running ? 'active' : 'stopped');
+    dot.className  = 'dot ' + (running ? 'active' : 'stopped');
+    txt.textContent = running ? 'Activo' : 'Detenido';
+  }
+
+  function renderStats() {
+    document.getElementById('totalSynced').textContent = state.totalSynced;
+    document.getElementById('cycles').textContent      = state.cycles;
+    document.getElementById('errors').textContent      = state.errors;
+    document.getElementById('chatName').textContent    = state.chatName;
+    document.getElementById('errors').style.color =
+      state.errors > 0 ? 'var(--red)' : 'var(--text2)';
+
+    if (state.lastSync) {
+      const d = new Date(state.lastSync);
+      document.getElementById('lastSync').textContent =
+        d.toLocaleTimeString('es-AR', { hour12: false });
+      const ago = Math.floor((Date.now() - d) / 1000);
+      document.getElementById('lastSyncAgo').textContent =
+        ago < 60 ? `hace ${ago}s` : `hace ${Math.floor(ago/60)}m`;
+    }
+
+    // Barra de ciclo (progreso hasta el próximo sync)
+    const pct = Math.max(0, Math.min(100, ((60 - state.nextSyncIn) / 60) * 100));
+    document.getElementById('cycleBar').style.width = pct + '%';
+    document.getElementById('nextSync').textContent = state.nextSyncIn;
+  }
+
+  // ── Logs ─────────────────────────────────────────────────────────────────
+  function renderLogs(logs) {
+    state.logs = logs;
+    const container = document.getElementById('log');
+    const filtered  = state.filter === 'all'
+      ? logs
+      : logs.filter(l => l.type === state.filter);
+
+    if (filtered.length === 0) {
+      container.innerHTML = `
+        <div class="empty">
+          <div class="empty-icon">◌</div>
+          <div>Sin entradas para mostrar</div>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = filtered.map(entry => `
+      <div class="log-entry">
+        <div class="log-time">${entry.time}</div>
+        <div class="log-badge ${entry.type}">${entry.type.toUpperCase()}</div>
+        <div class="log-msg">${formatMsg(entry.msg)}</div>
+      </div>
+    `).join('');
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function formatMsg(msg) {
+    return msg
+      .replace(/(\d+) mensaje/g, '<span class="highlight">$1</span> mensaje')
+      .replace(/(Listo|Correcto|OK)/gi, '<span class="highlight">$1</span>');
+  }
+
+  function filterLog(type, el) {
+    state.filter = type;
+    document.querySelectorAll('.tag').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    renderLogs(state.logs);
+  }
+
+  // ── Acciones ──────────────────────────────────────────────────────────────
+  async function forceSync() {
+    try {
+      await fetch('/api/sync-now', { method: 'POST' });
+      addLocalLog('info', 'Sync manual solicitado...');
+    } catch (_) {}
+  }
+
+  async function stopSync() {
+    if (!confirm('¿Detenés el proceso de sincronización?')) return;
+    try {
+      await fetch('/api/stop', { method: 'POST' });
+      addLocalLog('warn', 'Proceso detenido por el usuario.');
+      setStatus(false);
+    } catch (_) {}
+  }
+
+  function addLocalLog(type, msg) {
+    const time = new Date().toLocaleTimeString('es-AR', { hour12: false });
+    state.logs.push({ time, type, msg });
+    renderLogs(state.logs);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  fetchStatus();
+  fetchLogs();
+  setInterval(fetchStatus, 5000);
+  setInterval(fetchLogs,   5000);
+</script>
+</body>
+</html>

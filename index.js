@@ -1,143 +1,214 @@
-const { iniciar, abrirChat, obtenerMensajes } = require("./core/scraper");
+const { iniciar, abrirChat, obtenerMensajes, obtenerTodoElHistorial } = require("./core/scraper");
 const { filtrarNuevos, limpiar } = require("./core/parser");
 const { formatear } = require("./core/classifier");
 const { getState, setState } = require("./utils/stateManager");
 const { appendToDoc } = require("./services/googleDocs");
 const { authorize } = require("./auth");
+const { createServer, setState: setServerState, addLog, setCallbacks } = require("./server");
+const { notify } = require("./notifier");
 const config = require("./config");
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── Estado global ────────────────────────────────────────────────────────────
+
+let browser     = null;
+let intervalId  = null;
+let page        = null;
+let auth        = null;
+let forceSyncPending = false;
+let cycleCount  = 0;
+let errorCount  = 0;
+let totalSynced = 0;
+let nextSyncIn  = config.INTERVAL / 1000;
+
+// ─── Helpers de log ───────────────────────────────────────────────────────────
+
+function log(type, msg) {
+  const prefix = { sync: "[Sync]", info: "[Info]", warn: "[Warn]", error: "[Error]" };
+  console.log(`${prefix[type] || "[Log]"} ${msg}`);
+  addLog(type, msg);
+}
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 
-let browser = null;
-let intervalId = null;
-
 async function shutdown(señal) {
-  console.log(`\n[Sistema] Señal ${señal} recibida. Cerrando...`);
+  log("warn", `Señal ${señal} recibida. Cerrando...`);
+  setServerState({ running: false });
+
   if (intervalId) clearInterval(intervalId);
   if (browser) {
-    try {
-      await browser.close();
-      console.log("[Sistema] Browser cerrado correctamente.");
-    } catch (err) {
-      console.warn("[Sistema] Error cerrando browser:", err.message);
-    }
+    try { await browser.close(); log("info", "Browser cerrado."); }
+    catch (e) { log("warn", "Error cerrando browser: " + e.message); }
   }
   process.exit(0);
 }
 
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGINT",  () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// ─── Countdown del próximo sync ───────────────────────────────────────────────
+
+function startCountdown() {
+  nextSyncIn = config.INTERVAL / 1000;
+  const tick = setInterval(() => {
+    nextSyncIn = Math.max(0, nextSyncIn - 1);
+    setServerState({ nextSyncIn });
+  }, 1000);
+  return tick;
+}
+
+// ─── Lógica de sync ───────────────────────────────────────────────────────────
+
+async function runSync() {
+  try {
+    const mensajes = await obtenerMensajes(page);
+    const estado   = getState();
+
+    const nuevos = filtrarNuevos(mensajes, estado.lastMessage)
+      .map(limpiar)
+      .filter((m) => m.length > 0)
+      .slice(0, config.MAX_MESSAGES_PER_BATCH);
+
+    cycleCount++;
+    setServerState({ cycles: cycleCount });
+
+    if (nuevos.length === 0) {
+      log("info", `Sin mensajes nuevos. (${new Date().toLocaleTimeString()})`);
+      return;
+    }
+
+    log("sync", `${nuevos.length} mensaje(s) nuevo(s). Sincronizando...`);
+    await appendToDoc(auth, config.DOC_ID, nuevos.map(formatear).join(""));
+
+    setState(nuevos[nuevos.length - 1]);
+    totalSynced += nuevos.length;
+    setServerState({ totalSynced, lastSync: new Date().toISOString() });
+
+    log("sync", `Listo. ${totalSynced} mensajes sincronizados en total.`);
+
+    // Notificación de escritorio
+    notify(
+      "WA Sync",
+      `${nuevos.length} mensaje${nuevos.length > 1 ? "s" : ""} nuevo${nuevos.length > 1 ? "s" : ""} sincronizado${nuevos.length > 1 ? "s" : ""} al Doc.`,
+      "info"
+    );
+
+  } catch (err) {
+    errorCount++;
+    setServerState({ errors: errorCount });
+    log("error", `Error en ciclo: ${err.message}`);
+  }
+}
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 (async () => {
   console.log("=== WhatsApp → Google Docs Sync ===\n");
 
-  // 1. Autenticación con Google
-  let auth;
+  // 1. Iniciar dashboard
+  createServer();
+
+  // 2. Registrar callbacks del dashboard
+  setCallbacks({
+    onSyncNow: () => { forceSyncPending = true; },
+    onStop:    () => shutdown("dashboard")
+  });
+
+  // 3. Auth Google
   try {
     auth = await authorize();
+    log("info", "Autenticación con Google OK.");
   } catch (err) {
-    console.error("[Auth] Error fatal:", err.message);
+    log("error", "Auth fatal: " + err.message);
     process.exit(1);
   }
 
-  // 2. Iniciar WhatsApp Web
-  let page;
+  // 4. Iniciar browser
   try {
-    const resultado = await iniciar();
-    browser = resultado.browser;
-    page = resultado.page;
+    const r = await iniciar();
+    browser = r.browser;
+    page    = r.page;
+    log("info", "Browser iniciado.");
   } catch (err) {
-    console.error("[Scraper] Error iniciando browser:", err.message);
+    log("error", "Error iniciando browser: " + err.message);
     process.exit(1);
   }
 
-  // 3. Abrir el chat objetivo
+  // 5. Abrir chat
   try {
     await abrirChat(page, config.CHAT_NAME);
+    setServerState({ chatName: config.CHAT_NAME, running: true });
+    log("info", `Chat "${config.CHAT_NAME}" abierto.`);
   } catch (err) {
-    console.error("[Scraper] Error abriendo chat:", err.message);
+    log("error", "Error abriendo chat: " + err.message);
     await browser.close();
     process.exit(1);
   }
 
-  // 4. Esperar que los mensajes carguen
-  console.log("Esperando que carguen los mensajes...");
   await sleep(3000);
 
-  // 5. Lectura inicial
-  console.log("Leyendo mensajes existentes...");
-  const mensajesIniciales = await obtenerMensajes(page);
-  console.log(`[Init] ${mensajesIniciales.length} mensajes visibles en el DOM.`);
-
+  // 6. Lectura inicial
   const estado = getState();
   const esNuevaEjecucion = !estado.lastMessage;
 
-  if (mensajesIniciales.length === 0) {
-    console.log("[Init] Sin mensajes visibles. Esperando mensajes futuros...");
-  } else if (esNuevaEjecucion) {
-    // Primera ejecución: subir todo el historial visible
-    console.log(`[Init] Primera ejecución. Subiendo ${mensajesIniciales.length} mensajes al Doc...`);
+  if (esNuevaEjecucion) {
+    log("info", "Primera ejecución — recolectando historial completo (puede tardar ~2 min)...");
+    notify("WA Sync", "Recolectando historial completo. Puede tardar un par de minutos.", "info");
 
-    const mensajesLimpios = mensajesIniciales.map(limpiar).filter((m) => m.length > 0);
-    const LOTE = config.MAX_MESSAGES_PER_BATCH;
+    const historial = await obtenerTodoElHistorial(page, 20);
+    const limpios   = historial.map(limpiar).filter((m) => m.length > 0);
 
-    for (let i = 0; i < mensajesLimpios.length; i += LOTE) {
-      const lote = mensajesLimpios.slice(i, i + LOTE);
-      const texto = lote.map(formatear).join("");
-      await appendToDoc(auth, config.DOC_ID, texto);
-      console.log(`[Init] Lote ${Math.floor(i / LOTE) + 1} subido (${lote.length} mensajes).`);
+    log("info", `${limpios.length} mensajes únicos recolectados.`);
+
+    if (limpios.length > 0) {
+      const LOTE = config.MAX_MESSAGES_PER_BATCH;
+      for (let i = 0; i < limpios.length; i += LOTE) {
+        const lote  = limpios.slice(i, i + LOTE);
+        await appendToDoc(auth, config.DOC_ID, lote.map(formatear).join(""));
+        log("sync", `Lote ${Math.floor(i/LOTE)+1}/${Math.ceil(limpios.length/LOTE)} subido.`);
+      }
+      setState(limpios[limpios.length - 1]);
+      totalSynced = limpios.length;
+      setServerState({ totalSynced, lastSync: new Date().toISOString() });
+      log("sync", "Historial completo subido al Doc.");
+      notify("WA Sync", `Historial subido: ${limpios.length} mensajes en Google Docs.`, "info");
     }
-
-    setState(mensajesLimpios[mensajesLimpios.length - 1]);
-    console.log("[Init] Historial inicial subido. De ahora en más solo se sincronizan los nuevos.");
   } else {
-    // Ejecuciones siguientes: solo los mensajes perdidos desde la última vez
-    const nuevos = filtrarNuevos(mensajesIniciales, estado.lastMessage)
-      .map(limpiar)
-      .filter((m) => m.length > 0);
-
+    log("info", "Sesión existente. Verificando mensajes perdidos...");
+    const mensajes = await obtenerMensajes(page);
+    const nuevos   = filtrarNuevos(mensajes, estado.lastMessage).map(limpiar).filter((m) => m.length > 0);
     if (nuevos.length > 0) {
-      console.log(`[Init] ${nuevos.length} mensajes nuevos desde la última ejecución. Sincronizando...`);
-      const texto = nuevos.map(formatear).join("");
-      await appendToDoc(auth, config.DOC_ID, texto);
+      await appendToDoc(auth, config.DOC_ID, nuevos.map(formatear).join(""));
       setState(nuevos[nuevos.length - 1]);
-      console.log("[Init] Mensajes perdidos sincronizados.");
+      totalSynced = nuevos.length;
+      setServerState({ totalSynced, lastSync: new Date().toISOString() });
+      log("sync", `${nuevos.length} mensajes perdidos sincronizados.`);
     } else {
-      console.log("[Init] Sin mensajes nuevos desde la última ejecución.");
+      log("info", "Sin mensajes perdidos.");
     }
   }
 
-  // 6. Loop de polling
-  console.log(`\nSincronización activa. Revisando cada ${config.INTERVAL / 1000}s...\n`);
+  // 7. Loop de polling con countdown y force-sync
+  log("info", `Sincronización activa. Revisando cada ${config.INTERVAL / 1000}s.`);
+  log("info", `Dashboard disponible en http://localhost:3030`);
+
+  let countdownTick = startCountdown();
 
   intervalId = setInterval(async () => {
-    try {
-      const mensajes = await obtenerMensajes(page);
-      const estadoActual = getState();
-
-      const nuevos = filtrarNuevos(mensajes, estadoActual.lastMessage)
-        .map(limpiar)
-        .filter((m) => m.length > 0)
-        .slice(0, config.MAX_MESSAGES_PER_BATCH);
-
-      if (nuevos.length === 0) {
-        console.log(`[Sync] Sin mensajes nuevos. (${new Date().toLocaleTimeString()})`);
-        return;
-      }
-
-      console.log(`[Sync] ${nuevos.length} mensaje(s) nuevo(s). Sincronizando...`);
-      const texto = nuevos.map(formatear).join("");
-      await appendToDoc(auth, config.DOC_ID, texto);
-      setState(nuevos[nuevos.length - 1]);
-      console.log(`[Sync] Listo. (${new Date().toLocaleTimeString()})`);
-    } catch (err) {
-      console.error(`[Sync] Error en ciclo:`, err.message);
-    }
+    clearInterval(countdownTick);
+    await runSync();
+    countdownTick = startCountdown();
   }, config.INTERVAL);
-})();
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+  // Chequear force-sync cada segundo
+  setInterval(async () => {
+    if (!forceSyncPending) return;
+    forceSyncPending = false;
+    log("info", "Sync manual solicitado desde el dashboard.");
+    clearInterval(countdownTick);
+    await runSync();
+    countdownTick = startCountdown();
+  }, 1000);
+
+})();
